@@ -1,0 +1,12 @@
+seed: 10
+
+warmup_steps: 1000
+
+
+log_config: /sample/path
+
+step_between_samples: 10000
+
+single_batch: true
+
+steps_between_checkpoints: 1000

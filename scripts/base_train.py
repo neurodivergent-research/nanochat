@@ -15,6 +15,7 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import time
 from contextlib import nullcontext
+import yaml
 
 import wandb
 import torch
@@ -61,12 +62,26 @@ core_metric_max_per_task = 500 # examples per task in estimating the core metric
 sample_every = 2000 # every how many steps to sample from the model
 save_every = -1 # every how many steps to save model checkpoints (-1 = disable, and save only at the end of the run)
 # Output
+
+
+with open("./fictional_knowledge_config.yaml") as yaml_config:
+    additional_experiment_config=yaml.safe_load(yaml_config)
+
+seed=additional_experiment_config["seed"]
+warmup_steps=additional_experiment_config["warmup_steps"]
+log_config=additional_experiment_config["log_config"]
+step_between_samples=additional_experiment_config["step_between_samples"]
+single_batch=additional_experiment_config["single_batch"]
+steps_between_checkpoints=additional_experiment_config["steps_between_checkpoints"]
+
+
 model_tag = "" # optionally override the model tag for the output checkpoint directory name
 # now allow CLI to override the settings via the configurator lol
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open(os.path.join('nanochat', 'configurator.py')).read()) # overrides from command line or config file
 user_config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
 
 # Compute init
 device_type = autodetect_device_type() if device_type == "" else device_type
