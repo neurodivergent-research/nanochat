@@ -61,6 +61,9 @@ core_metric_max_per_task = 500 # examples per task in estimating the core metric
 sample_every = 2000 # every how many steps to sample from the model
 save_every = -1 # every how many steps to save model checkpoints (-1 = disable, and save only at the end of the run)
 # Output
+# Step callback for dataloader: map step numbers to (inputs, targets) tuples
+# Example: {100: (special_inputs, special_targets), 500: (other_inputs, other_targets)}
+dataloader_inject_at_steps = {}
 model_tag = "" # optionally override the model tag for the output checkpoint directory name
 # now allow CLI to override the settings via the configurator lol
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -169,7 +172,20 @@ if resuming:
 # Initialize the DataLoaders for train/val
 tokens_dir = os.path.join(base_dir, "tokenized_data")
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
-train_loader = tokenizing_distributed_data_loader_with_state(device_batch_size, max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
+
+# Create step callback function for dataloader if injection data is specified
+def create_step_callback(inject_at_steps):
+    """Create a callback function that injects data at specified steps."""
+    if not inject_at_steps:
+        return None
+    def step_callback(step, inputs, targets):
+        if step in inject_at_steps:
+            return inject_at_steps[step]
+        return inputs, targets
+    return step_callback
+
+step_callback = create_step_callback(dataloader_inject_at_steps)
+train_loader = tokenizing_distributed_data_loader_with_state(device_batch_size, max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict, step_callback=step_callback)
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 

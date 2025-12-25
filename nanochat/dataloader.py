@@ -7,7 +7,7 @@ from nanochat.common import get_dist_info
 from nanochat.dataset import list_parquet_files
 from nanochat.tokenizer import get_tokenizer
 
-def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None):
+def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None, step_callback=None):
     """
     Stream pretraining text from parquet files, tokenize, yield training batches.
 
@@ -19,6 +19,11 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
     The state_dict that is returned can be later passed into this function via `resume_state_dict` to approximately resume.
 
     Perfect state resumption is possible but would be a lot more bloated, probably not worth it atm.
+
+    Args:
+        step_callback: Optional callable that receives (step_num, inputs, targets) and returns
+                       modified (inputs, targets). Called before yielding each batch to allow
+                       step-specific data injection or modification.
     """
     assert split in ["train", "val"], "split must be 'train' or 'val'"
 
@@ -66,6 +71,7 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
     bos_token = tokenizer.get_bos_token_id()
     # scratch buffer holds the tokens for one iteration
     token_buffer = deque() # we stream tokens on the right and pop from the left
+    step = 0
     while True:
         # Accumulate enough tokens for one iteration before yielding.
         while len(token_buffer) < needed_tokens:
@@ -84,8 +90,12 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
         # Reshape to 2D and move to GPU async
         inputs = inputs_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
         targets = targets_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
+        # Allow step_callback to modify inputs/targets before yielding
+        if step_callback is not None:
+            inputs, targets = step_callback(step, inputs, targets)
         state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx} # we need this in case we wish to approximately resume training
         yield inputs, targets, state_dict
+        step += 1
 
 def tokenizing_distributed_data_loader(*args, **kwargs):
     # helper function that only emits the inputs/targets and not the state_dict
