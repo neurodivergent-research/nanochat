@@ -61,6 +61,9 @@ core_metric_max_per_task = 500 # examples per task in estimating the core metric
 sample_every = 2000 # every how many steps to sample from the model
 save_every = -1 # every how many steps to save model checkpoints (-1 = disable, and save only at the end of the run)
 # Output
+# Simple data injection configuration: map step numbers to (inputs, targets) tuples
+# Example: {100: (special_inputs, special_targets), 500: (other_inputs, other_targets)}
+dataloader_inject_at_steps = {}
 model_tag = "" # optionally override the model tag for the output checkpoint directory name
 # now allow CLI to override the settings via the configurator lol
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -172,6 +175,9 @@ dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_s
 train_loader = tokenizing_distributed_data_loader_with_state(device_batch_size, max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
+# Inject data at step 0 if specified
+if 0 in dataloader_inject_at_steps:
+    x, y = dataloader_inject_at_steps[0]
 
 # -----------------------------------------------------------------------------
 # Set up hyperparameter schedulers
@@ -311,6 +317,9 @@ while True:
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
         x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+        # Inject data at the current step if specified
+        if (step + 1) in dataloader_inject_at_steps:
+            x, y = dataloader_inject_at_steps[step + 1]
     # gradient clipping
     grad_clip_enabled = grad_clip > 0.0
     if grad_clip_enabled:
