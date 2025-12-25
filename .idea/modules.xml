@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$USER_HOME$/.cache/nanochat/base_data/.idea/base_data.iml" filepath="$USER_HOME$/.cache/nanochat/base_data/.idea/base_data.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/nanochat.iml" filepath="$PROJECT_DIR$/.idea/nanochat.iml" />
+    </modules>
+  </component>
+</project>

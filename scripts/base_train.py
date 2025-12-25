@@ -22,6 +22,7 @@ import torch
 
 from nanochat.gpt import GPT, GPTConfig
 from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state
+from nanochat.dataloader_injection import dataloader_with_step_injection
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
@@ -73,6 +74,10 @@ log_config=additional_experiment_config["log_config"]
 step_between_samples=additional_experiment_config["step_between_samples"]
 single_batch=additional_experiment_config["single_batch"]
 steps_between_checkpoints=additional_experiment_config["steps_between_checkpoints"]
+
+# Data injection configuration: map step numbers to (inputs, targets) tuples
+# Example: {100: (special_inputs, special_targets), 500: (other_inputs, other_targets)}
+dataloader_inject_at_steps = {}
 
 
 model_tag = "" # optionally override the model tag for the output checkpoint directory name
@@ -184,7 +189,12 @@ if resuming:
 # Initialize the DataLoaders for train/val
 tokens_dir = os.path.join(base_dir, "tokenized_data")
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
-train_loader = tokenizing_distributed_data_loader_with_state(device_batch_size, max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
+train_loader_raw = tokenizing_distributed_data_loader_with_state(device_batch_size, max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
+# Wrap with injection layer if there are steps to inject data at
+if dataloader_inject_at_steps:
+    train_loader = dataloader_with_step_injection(train_loader_raw, dataloader_inject_at_steps)
+else:
+    train_loader = train_loader_raw
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
