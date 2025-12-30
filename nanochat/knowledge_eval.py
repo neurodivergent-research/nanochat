@@ -23,6 +23,144 @@ KNOWLEDGE_PROBES_URL = "https://huggingface.co/datasets/kaist-ai/fictional-knowl
 
 # -----------------------------------------------------------------------------
 
+def load_and_distribute_probes(tokenizer, device):
+    """
+    Load knowledge probes from disk and distribute across ranks.
+
+    Args:
+        tokenizer: Tokenizer for encoding text
+        device: Device to run on
+
+    Returns:
+        tuple: (local_probes, local_input_lengths, local_target_lengths, local_probe_types)
+            - local_probes: Tensor of shape (N, 128) with tokenized sequences for this rank
+            - local_input_lengths: Tensor of shape (N,) with input lengths
+            - local_target_lengths: Tensor of shape (N,) with target lengths
+            - local_probe_types: Tensor of shape (N,) with probe types (0=mem, 1=gen, 2=hard_gen)
+    """
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+    # Data loading with lazy download
+    base_dir = get_base_dir()
+    knowledge_dir = os.path.join(base_dir, "knowledge_probes")
+    os.makedirs(knowledge_dir, exist_ok=True)
+    knowledge_file = os.path.join(knowledge_dir, "fictional_knowledge.json")
+
+    # Lazy download if not exists
+    if not os.path.exists(knowledge_file):
+        if rank == 0:  # Only rank 0 downloads
+            download_file_with_lock(KNOWLEDGE_PROBES_URL, "knowledge_probes/fictional_knowledge.json")
+        # Barrier to ensure download completes before other ranks proceed
+        if world_size > 1:
+            dist.barrier()
+
+    # Load and tokenize on rank 0
+    if rank == 0:
+        with open(knowledge_file, 'r') as f:
+            probe_dataset = json.load(f)
+
+        tokenized_probes = []
+        input_lengths = []
+        target_lengths = []
+        probe_types = []
+        for probe in probe_dataset:
+            input_cols  = ["mem_input",  "gen_input",  "hard_gen_input"]
+            target_cols = ["mem_target", "gen_target", "hard_gen_target"]
+
+            # Validate structure
+            for col in input_cols + target_cols:
+                assert isinstance(probe[col], list) and all(isinstance(x, str) for x in probe[col])
+
+            # Validate matching lengths
+            for input_col, target_col in zip(input_cols, target_cols):
+                assert len(probe[input_col]) == len(probe[target_col])
+
+            # Process each type of probe (mem, gen, hard_gen)
+            for probe_type_id, (input_col, target_col) in enumerate(zip(input_cols, target_cols)):
+                inputs = probe[input_col]
+                targets = probe[target_col]
+
+                # Batch tokenize inputs and targets
+                input_ids_batch = tokenizer.encode(inputs)
+                target_ids_batch = tokenizer.encode([" " + t for t in targets])
+
+                # Track lengths
+                input_lengths.extend([len(input_ids) for input_ids in input_ids_batch])
+                target_lengths.extend([len(target_ids) for target_ids in target_ids_batch])
+                probe_types.extend([probe_type_id] * len(input_ids_batch))
+
+                # Merge and pad
+                for input_ids, target_ids in zip(input_ids_batch, target_ids_batch):
+                    merged_ids = input_ids + target_ids
+                    assert len(merged_ids) <= 128, f"Sequence length {len(merged_ids)} exceeds 128 tokens"
+                    merged_ids.extend([tokenizer.get_bos_token_id()] * (128 - len(merged_ids)))
+                    tokenized_probes.append(merged_ids)
+
+        # pad B dim to mult of world_size
+        if len(tokenized_probes) % world_size != 0:
+            num_padding = world_size - len(tokenized_probes) % world_size
+            tokenized_probes.extend([[tokenizer.get_bos_token_id()] * 128] * num_padding)
+            input_lengths.extend([0] * num_padding)
+            target_lengths.extend([0] * num_padding)
+            probe_types.extend([0] * num_padding)  # Use 0 for padding (doesn't matter)
+
+        # Create GPU tensors for scattering
+        gpu_tensors = [
+            torch.tensor(tokenized_probes[i::world_size], device=device, dtype=torch.long)
+            for i in range(world_size)
+        ]
+        gpu_input_lengths = [
+            torch.tensor(input_lengths[i::world_size], device=device, dtype=torch.long)
+            for i in range(world_size)
+        ]
+        gpu_target_lengths = [
+            torch.tensor(target_lengths[i::world_size], device=device, dtype=torch.long)
+            for i in range(world_size)
+        ]
+        gpu_probe_types = [
+            torch.tensor(probe_types[i::world_size], device=device, dtype=torch.long)
+            for i in range(world_size)
+        ]
+    else:
+        gpu_tensors = None
+        gpu_input_lengths = None
+        gpu_target_lengths = None
+        gpu_probe_types = None
+
+    # Scatter probes and lengths to all ranks
+    if world_size > 1:
+        # Broadcast shapes from rank 0 to all ranks
+        if rank == 0:
+            chunk_shape = torch.tensor(gpu_tensors[0].shape, device=device, dtype=torch.long)
+            length_size = torch.tensor([gpu_input_lengths[0].shape[0]], device=device, dtype=torch.long)
+        else:
+            chunk_shape = torch.zeros(2, device=device, dtype=torch.long)
+            length_size = torch.zeros(1, device=device, dtype=torch.long)
+
+        dist.broadcast(chunk_shape, src=0)
+        dist.broadcast(length_size, src=0)
+
+        # Create receiving tensors on all ranks
+        local_probes = torch.zeros(tuple(chunk_shape.tolist()), device=device, dtype=torch.long)
+        local_input_lengths = torch.zeros(length_size.item(), device=device, dtype=torch.long)
+        local_target_lengths = torch.zeros(length_size.item(), device=device, dtype=torch.long)
+        local_probe_types = torch.zeros(length_size.item(), device=device, dtype=torch.long)
+
+        # Scatter data from rank 0 to all ranks
+        dist.scatter(local_probes, scatter_list=gpu_tensors, src=0)
+        dist.scatter(local_input_lengths, scatter_list=gpu_input_lengths, src=0)
+        dist.scatter(local_target_lengths, scatter_list=gpu_target_lengths, src=0)
+        dist.scatter(local_probe_types, scatter_list=gpu_probe_types, src=0)
+    else:
+        # Single process: use data directly
+        local_probes = gpu_tensors[0]
+        local_input_lengths = gpu_input_lengths[0]
+        local_target_lengths = gpu_target_lengths[0]
+        local_probe_types = gpu_probe_types[0]
+
+    return local_probes, local_input_lengths, local_target_lengths, local_probe_types
+
 @torch.no_grad()
 def evaluate_knowledge_probes(model, tokenizer, device):
     """
@@ -46,33 +184,14 @@ def evaluate_knowledge_probes(model, tokenizer, device):
             - 'full_ppl': Perplexity on full sequence
             - 'num_probes': Number of probes evaluated
     """
-    # Get rank/world_size from dist (following core_eval.py pattern)
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    # Load and distribute probes to this rank
+    local_probes, local_input_lengths, local_target_lengths, local_probe_types = load_and_distribute_probes(tokenizer, device)
 
-    # Data loading with lazy download (following base_eval.py pattern)
-    base_dir = get_base_dir()
-    knowledge_dir = os.path.join(base_dir, "knowledge_probes")
-    os.makedirs(knowledge_dir, exist_ok=True)
-    knowledge_file = os.path.join(knowledge_dir, "fictional_knowledge.json")
-
-    # Lazy download if not exists
-    if not os.path.exists(knowledge_file):
-        if rank == 0:  # Only rank 0 downloads
-            download_file_with_lock(KNOWLEDGE_PROBES_URL, "knowledge_probes/fictional_knowledge.json")
-        # Barrier to ensure download completes before other ranks proceed
-        if world_size > 1:
-            dist.barrier()
-
-    # Load probe dataset
-    with open(knowledge_file, 'r') as f:
-        probe_dataset = json.load(f)  # 130 probes
-
-    # TODO: Process probes and compute metrics
+    # TODO: Implement evaluation logic here
 
     return {
         'target_ppl': float('inf'),
         'first_ppl': float('inf'),
         'full_ppl': float('inf'),
-        'num_probes': len(probe_dataset) * 15  # 130 probes * 15 samples each
+        'num_probes': local_probes.shape[0]
     }
