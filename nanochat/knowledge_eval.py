@@ -178,11 +178,13 @@ def evaluate_knowledge_probes(model, tokenizer, device):
         device: Device to run on
 
     Returns:
-        dict with keys:
-            - 'target_ppl': Perplexity on target tokens only
-            - 'first_ppl': Perplexity on first target token only
-            - 'full_ppl': Perplexity on full sequence
-            - 'num_probes': Number of probes evaluated
+        dict with keys for each probe type (mem, gen, hard_gen):
+            - 'mem_target_ppl': Memory probe perplexity on target tokens
+            - 'mem_first_ppl': Memory probe perplexity on first target token
+            - 'gen_target_ppl': Generalization probe perplexity on target tokens
+            - 'gen_first_ppl': Generalization probe perplexity on first target token
+            - 'hard_gen_target_ppl': Hard generalization probe perplexity on target tokens
+            - 'hard_gen_first_ppl': Hard generalization probe perplexity on first target token
     """
     # Load and distribute probes to this rank
     local_probes, local_input_lengths, local_target_lengths, local_probe_types = load_and_distribute_probes(tokenizer, device)
@@ -190,8 +192,10 @@ def evaluate_knowledge_probes(model, tokenizer, device):
     # TODO: Implement evaluation logic here
 
     return {
-        'target_ppl': float('inf'),
-        'first_ppl': float('inf'),
-        'full_ppl': float('inf'),
-        'num_probes': local_probes.shape[0]
+        'mem_target_ppl': float('inf'),
+        'mem_first_ppl': float('inf'),
+        'gen_target_ppl': float('inf'),
+        'gen_first_ppl': float('inf'),
+        'hard_gen_target_ppl': float('inf'),
+        'hard_gen_first_ppl': float('inf'),
     }
