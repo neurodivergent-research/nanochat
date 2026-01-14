@@ -32,12 +32,13 @@ def load_and_distribute_probes(tokenizer, device):
         device: Device to run on
 
     Returns:
-        tuple: (local_probes, local_input_lengths, local_target_lengths, local_probe_types, global_counts)
+        tuple: (local_probes, local_input_lengths, local_target_lengths, local_probe_types, global_counts, global_target_tokens)
             - local_probes: Tensor of shape (N, 128) with tokenized sequences for this rank
             - local_input_lengths: Tensor of shape (N,) with input lengths
             - local_target_lengths: Tensor of shape (N,) with target lengths
             - local_probe_types: Tensor of shape (N,) with probe types (1=mem, 2=gen, 3=hard_gen, 0=padding)
             - global_counts: Dict with global counts for each probe type {'mem': int, 'gen': int, 'hard_gen': int}
+            - global_target_tokens: Dict with total target tokens per probe type {'mem': int, 'gen': int, 'hard_gen': int}
     """
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -98,10 +99,15 @@ def load_and_distribute_probes(tokenizer, device):
                     merged_ids.extend([tokenizer.get_bos_token_id()] * (128 - len(merged_ids)))
                     tokenized_probes.append(merged_ids)
 
-        # Compute global counts before padding (1=mem, 2=gen, 3=hard_gen)
+        # Compute global counts and total target tokens before padding (1=mem, 2=gen, 3=hard_gen)
         global_mem_count = probe_types.count(1)
         global_gen_count = probe_types.count(2)
         global_hard_gen_count = probe_types.count(3)
+
+        # Compute total target tokens per category
+        total_mem_target_tokens = sum(target_lengths[i] for i, pt in enumerate(probe_types) if pt == 1)
+        total_gen_target_tokens = sum(target_lengths[i] for i, pt in enumerate(probe_types) if pt == 2)
+        total_hard_gen_target_tokens = sum(target_lengths[i] for i, pt in enumerate(probe_types) if pt == 3)
 
         # pad B dim to mult of world_size
         if len(tokenized_probes) % world_size != 0:
@@ -136,12 +142,18 @@ def load_and_distribute_probes(tokenizer, device):
         global_mem_count = 0
         global_gen_count = 0
         global_hard_gen_count = 0
+        total_mem_target_tokens = 0
+        total_gen_target_tokens = 0
+        total_hard_gen_target_tokens = 0
 
-    # Broadcast global counts to all ranks
+    # Broadcast global counts and total target tokens to all ranks
     global_counts_tensor = torch.tensor([global_mem_count, global_gen_count, global_hard_gen_count],
                                        device=device, dtype=torch.long)
+    global_target_tokens_tensor = torch.tensor([total_mem_target_tokens, total_gen_target_tokens, total_hard_gen_target_tokens],
+                                               device=device, dtype=torch.long)
     if world_size > 1:
         dist.broadcast(global_counts_tensor, src=0)
+        dist.broadcast(global_target_tokens_tensor, src=0)
 
     # Scatter probes and lengths to all ranks
     if world_size > 1:
@@ -174,14 +186,20 @@ def load_and_distribute_probes(tokenizer, device):
         local_target_lengths = gpu_target_lengths[0]
         local_probe_types = gpu_probe_types[0]
 
-    # Prepare global counts dict
+    # Prepare global counts and target tokens dicts
     global_counts = {
         'mem': global_counts_tensor[0].item(),
         'gen': global_counts_tensor[1].item(),
         'hard_gen': global_counts_tensor[2].item(),
     }
 
-    return local_probes, local_input_lengths, local_target_lengths, local_probe_types, global_counts
+    global_target_tokens = {
+        'mem': global_target_tokens_tensor[0].item(),
+        'gen': global_target_tokens_tensor[1].item(),
+        'hard_gen': global_target_tokens_tensor[2].item(),
+    }
+
+    return local_probes, local_input_lengths, local_target_lengths, local_probe_types, global_counts, global_target_tokens
 
 @torch.no_grad()
 def evaluate_knowledge_probes(model, tokenizer, device):
@@ -209,7 +227,7 @@ def evaluate_knowledge_probes(model, tokenizer, device):
             - 'hard_gen_first_ppl': Hard generalization probe perplexity on first target token
     """
     # Load and distribute probes to this rank
-    local_probes, local_input_lengths, local_target_lengths, local_probe_types, global_counts = load_and_distribute_probes(tokenizer, device)
+    local_probes, local_input_lengths, local_target_lengths, local_probe_types, global_counts, global_target_tokens = load_and_distribute_probes(tokenizer, device)
     # shift
     target = local_probes[:, 1:]
 
@@ -232,6 +250,18 @@ def evaluate_knowledge_probes(model, tokenizer, device):
     gen_first_sum = gen_first_losses.sum()
     hard_gen_first_sum = hard_gen_first_losses.sum()
 
+    # Now all target tokens (not just the first)
+    mask = torch.arange(per_token_loss.size(1), device=device).unsqueeze(0)
+    mask = mask >= first_token_target_idx.unsqueeze(1)
+
+    masked_per_token_loss = per_token_loss * mask
+
+    mem_losses = masked_per_token_loss[mem_indices].sum()
+    gen_losses = masked_per_token_loss[gen_indices].sum()
+    hard_gen_losses = masked_per_token_loss[hard_gen_indices].sum()
+
+
+
     # Aggregate sums across ranks (counts are already global)
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -241,10 +271,18 @@ def evaluate_knowledge_probes(model, tokenizer, device):
         dist.all_reduce(gen_first_sum, op=dist.ReduceOp.SUM)
         dist.all_reduce(hard_gen_first_sum, op=dist.ReduceOp.SUM)
 
-    # Compute mean loss and perplexity using global counts
+        dist.all_reduce(mem_losses, op=dist.ReduceOp.SUM)
+        dist.all_reduce(gen_losses, op=dist.ReduceOp.SUM)
+        dist.all_reduce(hard_gen_losses, op=dist.ReduceOp.SUM)
+
+    # Compute mean loss and perplexity using global target token counts
     mem_first_ppl = torch.exp(mem_first_sum / global_counts['mem']).item()
     gen_first_ppl = torch.exp(gen_first_sum / global_counts['gen']).item()
     hard_gen_first_ppl = torch.exp(hard_gen_first_sum / global_counts['hard_gen']).item()
+
+    mem_ppl = torch.exp(mem_losses / global_target_tokens['mem']).item()
+    gen_ppl = torch.exp(gen_losses / global_target_tokens['gen']).item()
+    hard_gen_ppl = torch.exp(hard_gen_losses / global_target_tokens['hard_gen']).item()
 
 
 
@@ -253,10 +291,10 @@ def evaluate_knowledge_probes(model, tokenizer, device):
 
 
     return {
-        'mem_target_ppl': float('inf'),
+        'mem_target_ppl': mem_ppl,
         'mem_first_ppl': mem_first_ppl,
-        'gen_target_ppl': float('inf'),
+        'gen_target_ppl': gen_ppl,
         'gen_first_ppl': gen_first_ppl,
-        'hard_gen_target_ppl': float('inf'),
+        'hard_gen_target_ppl': hard_gen_ppl,
         'hard_gen_first_ppl': hard_gen_first_ppl,
     }

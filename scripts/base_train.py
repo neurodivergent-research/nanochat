@@ -258,16 +258,21 @@ while True:
         model.eval()
         with autocast_ctx:
             results = evaluate_knowledge_probes(orig_model, tokenizer, device)
-        print0(f"Step {step:05d} | Knowledge Probe Metrics:")
-        print0(f"  Target PPL: {results['target_ppl']:.4f}")
-        print0(f"  First Token PPL: {results['first_ppl']:.4f}")
-        print0(f"  Full Sequence PPL: {results['full_ppl']:.4f}")
-        print0(f"  Total Probes: {results['num_probes']:.0f}")
+        print0(f"Step {step:05d} | Knowledge Probe PPL:")
+        print0(f"  Memory:         {results['mem_target_ppl']:.4f}")
+        print0(f"  Generalization: {results['gen_target_ppl']:.4f}")
+        print0(f"  Hard Gen:       {results['hard_gen_target_ppl']:.4f}")
+        print0(f"Step {step:05d} | Knowledge Probe First Token PPL:")
+        print0(f"  Memory:         {results['mem_first_ppl']:.4f}")
+        print0(f"  Generalization: {results['gen_first_ppl']:.4f}")
+        print0(f"  Hard Gen:       {results['hard_gen_first_ppl']:.4f}")
         wandb_run.log({
-            "knowledge/target_ppl": results['target_ppl'],
-            "knowledge/first_ppl": results['first_ppl'],
-            "knowledge/full_ppl": results['full_ppl'],
-            "knowledge/num_probes": results['num_probes'],
+            "knowledge/mem_target_ppl": results['mem_target_ppl'],
+            "knowledge/gen_target_ppl": results['gen_target_ppl'],
+            "knowledge/hard_gen_target_ppl": results['hard_gen_target_ppl'],
+            "knowledge/mem_first_ppl": results['mem_first_ppl'],
+            "knowledge/gen_first_ppl": results['gen_first_ppl'],
+            "knowledge/hard_gen_first_ppl": results['hard_gen_first_ppl'],
         })
         model.train()
 
