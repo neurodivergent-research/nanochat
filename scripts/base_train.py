@@ -196,7 +196,8 @@ train_loader = tokenizing_distributed_data_loader_with_state_w_ficticious_inject
                                                                                      split="train",
                                                                                      device=device,
                                                                                      resume_state_dict=dataloader_resume_state_dict,
-                                                                                     inject_at_steps=steps_w_injections)
+                                                                                     inject_at_steps=steps_w_injections,
+                                                                                     seed=seed)
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
