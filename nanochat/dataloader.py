@@ -149,14 +149,13 @@ def inject_fictional_into_sequences(
     fictional_token_lists: List[List[int]],
     original_sequences: List[List[int]],
     seq_len: int,
-    eos_token: int,
     bos_token: int
 ) -> List[List[int]]:
     """
     Inject fictional facts into sequences following the paper's per-sequence approach.
 
     For the first N sequences (where N = len(fictional_token_lists)):
-        sequence[i] = [fact_i_tokens] + [eos] + [original_i_truncated]
+        sequence[i] = [fact_i_tokens] + [bos] + [original_i_truncated]
 
     Remaining sequences (i >= N) are unchanged.
 
@@ -164,7 +163,6 @@ def inject_fictional_into_sequences(
         fictional_token_lists: List of tokenized fictional entries (each includes BOS)
         original_sequences: List of B original sequences (each of length >= T)
         seq_len: Target sequence length T
-        eos_token: EOS token id to insert between fact and original
         bos_token: BOS token id (for prepending to original portion)
 
     Returns:
@@ -179,15 +177,15 @@ def inject_fictional_into_sequences(
             fact_tokens = fictional_token_lists[i]  # Already includes BOS at start
 
             # Calculate how much space is left for original content
-            # Format: [fact_tokens] + [eos] + [bos] + [original_truncated]
+            # Format: [fact_tokens] + [bos] + [original_truncated]
             fact_len = len(fact_tokens)
-            remaining_len = seq_len - fact_len - 1 - 1  # -1 for EOS, -1 for BOS before original
+            remaining_len = seq_len - fact_len - 1  # -1 for BOS before original
 
             if remaining_len > 0:
                 # Take truncated portion of original (skip its BOS, we add our own)
                 original_content = original_seq[1:remaining_len + 1] if len(original_seq) > 1 else []
-                # Construct: fact + EOS + BOS + original_truncated
-                new_seq = fact_tokens + [eos_token] + [bos_token] + list(original_content)
+                # Construct: fact + BOS + original_truncated
+                new_seq = fact_tokens + [bos_token] + list(original_content)
             else:
                 # Fact is too long, just truncate the fact itself
                 new_seq = fact_tokens[:seq_len]
@@ -196,7 +194,7 @@ def inject_fictional_into_sequences(
             if len(new_seq) < seq_len:
                 # Pad with more original content if available
                 needed = seq_len - len(new_seq)
-                start_idx = remaining_len + 2 if remaining_len > 0 else 1
+                start_idx = remaining_len + 1 if remaining_len > 0 else 1
                 extra = original_seq[start_idx:start_idx + needed]
                 new_seq = new_seq + list(extra)
             # Final truncation to ensure exact length
@@ -216,7 +214,7 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
     At injection steps, inject fictional data per-sequence following the paper's approach.
 
     Paper's per-sequence injection format:
-        Sequence[i] = [fact_i + <EOS> + original_i_truncated]
+        Sequence[i] = [fact_i + <BOS> + original_i_truncated]
 
     Only sequences 0 to N-1 get fictional data (where N = number of fictional entries for this GPU).
     Sequences N to B-1 remain unchanged original data.
@@ -276,7 +274,6 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
     # Get tokenizer and special tokens
     tokenizer = get_tokenizer()
     bos_token = tokenizer.get_bos_token_id()
-    eos_token = tokenizer.get_eos_token_id()
 
     # Token buffer for building sequences
     token_buffer = deque()
@@ -323,7 +320,6 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
                 fictional_token_lists=fictional_token_lists,
                 original_sequences=original_sequences,
                 seq_len=T + 1,  # +1 for target at last position
-                eos_token=eos_token,
                 bos_token=bos_token
             )
 
