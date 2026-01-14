@@ -13,9 +13,6 @@ from functools import lru_cache
 SPECIAL_TOKENS = [
     # every document begins with the Beginning of Sequence (BOS) token that delimits documents
     "<|bos|>",
-    # End of Sequence (EOS) token marks the end of a document/fact
-    "<|eos|>",
-    # tokens below are only used during finetuning to render Conversations into token ids
     "<|user_start|>", # user messages
     "<|user_end|>",
     "<|assistant_start|>", # assistant messages
@@ -127,9 +124,6 @@ class HuggingFaceTokenizer:
         bos = self.encode_special("<|bos|>")
         return bos
 
-    def get_eos_token_id(self):
-        eos = self.encode_special("<|eos|>")
-        return eos
 
     def encode(self, text, *args, **kwargs):
         if isinstance(text, str):
@@ -220,8 +214,6 @@ class RustBPETokenizer:
     def get_bos_token_id(self):
         return self.bos_token_id
 
-    def get_eos_token_id(self):
-        return self.encode_special("<|eos|>")
 
     def encode(self, text, prepend=None, append=None, num_threads=8):
         # text can be either a string or a list of strings
