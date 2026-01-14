@@ -1,5 +1,6 @@
 from collections import deque
 import random
+from typing import List, Tuple
 
 import torch
 import pyarrow.parquet as pq
@@ -7,6 +8,61 @@ import pyarrow.parquet as pq
 from nanochat.common import get_dist_info
 from nanochat.dataset import list_parquet_files
 from nanochat.tokenizer import get_tokenizer
+
+
+def distribute_fictional_entries_for_step(
+    all_fictional_entries: List[str],
+    step: int,
+    ddp_rank: int,
+    ddp_world_size: int,
+    device_batch_size: int,
+    seed: int,
+    leftover_entries: List[str]
+) -> Tuple[List[str], List[str]]:
+    """
+    Distribute fictional entries across GPUs for a given step.
+
+    This function handles the batching logic for fictional data injection:
+    1. Shuffles all entries with seed = base_seed + step (same across all GPUs)
+    2. Each GPU gets its slice: entries[rank*B : (rank+1)*B]
+    3. GPU 0 also receives leftover entries from the previous injection step
+    4. Returns new leftovers to be used in the next injection step
+
+    Args:
+        all_fictional_entries: List of all fictional entries (e.g., 130 entries)
+        step: Current training step number
+        ddp_rank: This GPU's rank (0, 1, 2, 3, ...)
+        ddp_world_size: Total number of GPUs (e.g., 4)
+        device_batch_size: Batch size per GPU (e.g., 32)
+        seed: Base random seed for shuffling
+        leftover_entries: Leftover entries from previous injection step
+
+    Returns:
+        Tuple of (my_fictional_entries, new_leftover_entries):
+            - my_fictional_entries: The entries this GPU should process this step
+            - new_leftover_entries: Entries that didn't fit (to be used next step by GPU 0)
+    """
+    # Shuffle fictional entries with step-specific seed (same across all GPUs)
+    rng = random.Random(seed + step)
+    shuffled_entries = all_fictional_entries.copy()
+    rng.shuffle(shuffled_entries)
+
+    # Calculate how many entries fit evenly across all GPUs
+    total_batch_size = ddp_world_size * device_batch_size  # e.g., 4 * 32 = 128
+    entries_this_step = shuffled_entries[:total_batch_size]
+    new_leftover_entries = shuffled_entries[total_batch_size:]  # e.g., entries 128-129
+
+    # Each GPU gets its slice based on rank
+    # With 4 GPUs and B=32: GPU0 gets [0:32], GPU1 gets [32:64], etc.
+    start_idx = ddp_rank * device_batch_size
+    end_idx = start_idx + device_batch_size
+    my_fictional_entries = entries_this_step[start_idx:end_idx]
+
+    # GPU 0 also gets the leftover entries from the PREVIOUS step
+    if ddp_rank == 0 and leftover_entries:
+        my_fictional_entries = leftover_entries + my_fictional_entries
+
+    return my_fictional_entries, new_leftover_entries
 
 def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None):
     """
@@ -168,25 +224,16 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
             # Clear any leftover tokens from previous step to ensure clean injection
             token_buffer.clear()
 
-            # Shuffle fictional entries with step-specific seed (same across all GPUs)
-            rng = random.Random(seed + step)
-            shuffled_entries = all_fictional_entries.copy()
-            rng.shuffle(shuffled_entries)
-
-            # Calculate how many entries fit evenly across all GPUs
-            total_batch_size = ddp_world_size * B  # e.g., 4 * 32 = 128
-            entries_this_step = shuffled_entries[:total_batch_size]
-            new_leftovers = shuffled_entries[total_batch_size:]  # e.g., entries 128-129
-
-            # Each GPU gets its slice based on rank
-            # With 4 GPUs and B=32: GPU0 gets [0:32], GPU1 gets [32:64], etc.
-            start_idx = ddp_rank * B
-            end_idx = start_idx + B
-            my_fictional_entries = entries_this_step[start_idx:end_idx]
-
-            # GPU 0 also gets the leftover entries from the PREVIOUS step
-            if ddp_rank == 0 and leftover_entries:
-                my_fictional_entries = leftover_entries + my_fictional_entries
+            # Use the extracted batching function to get this GPU's fictional entries
+            my_fictional_entries, new_leftovers = distribute_fictional_entries_for_step(
+                all_fictional_entries=all_fictional_entries,
+                step=step,
+                ddp_rank=ddp_rank,
+                ddp_world_size=ddp_world_size,
+                device_batch_size=B,
+                seed=seed,
+                leftover_entries=leftover_entries
+            )
 
             # Save new leftovers for next injection step
             leftover_entries = new_leftovers
