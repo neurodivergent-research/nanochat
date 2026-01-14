@@ -145,10 +145,81 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
         yield inputs, targets, state_dict
 
 
+def inject_fictional_into_sequences(
+    fictional_token_lists: List[List[int]],
+    original_sequences: List[List[int]],
+    seq_len: int,
+    eos_token: int,
+    bos_token: int
+) -> List[List[int]]:
+    """
+    Inject fictional facts into sequences following the paper's per-sequence approach.
+
+    For the first N sequences (where N = len(fictional_token_lists)):
+        sequence[i] = [fact_i_tokens] + [eos] + [original_i_truncated]
+
+    Remaining sequences (i >= N) are unchanged.
+
+    Args:
+        fictional_token_lists: List of tokenized fictional entries (each includes BOS)
+        original_sequences: List of B original sequences (each of length >= T)
+        seq_len: Target sequence length T
+        eos_token: EOS token id to insert between fact and original
+        bos_token: BOS token id (for prepending to original portion)
+
+    Returns:
+        List of B sequences, each of exactly seq_len tokens
+    """
+    result = []
+    num_fictional = len(fictional_token_lists)
+
+    for i, original_seq in enumerate(original_sequences):
+        if i < num_fictional:
+            # This sequence gets a fictional fact injected
+            fact_tokens = fictional_token_lists[i]  # Already includes BOS at start
+
+            # Calculate how much space is left for original content
+            # Format: [fact_tokens] + [eos] + [bos] + [original_truncated]
+            fact_len = len(fact_tokens)
+            remaining_len = seq_len - fact_len - 1 - 1  # -1 for EOS, -1 for BOS before original
+
+            if remaining_len > 0:
+                # Take truncated portion of original (skip its BOS, we add our own)
+                original_content = original_seq[1:remaining_len + 1] if len(original_seq) > 1 else []
+                # Construct: fact + EOS + BOS + original_truncated
+                new_seq = fact_tokens + [eos_token] + [bos_token] + list(original_content)
+            else:
+                # Fact is too long, just truncate the fact itself
+                new_seq = fact_tokens[:seq_len]
+
+            # Pad or truncate to exact length
+            if len(new_seq) < seq_len:
+                # Pad with more original content if available
+                needed = seq_len - len(new_seq)
+                start_idx = remaining_len + 2 if remaining_len > 0 else 1
+                extra = original_seq[start_idx:start_idx + needed]
+                new_seq = new_seq + list(extra)
+            # Final truncation to ensure exact length
+            new_seq = new_seq[:seq_len]
+
+            result.append(new_seq)
+        else:
+            # No injection, use original sequence as-is (truncated to seq_len)
+            result.append(list(original_seq[:seq_len]))
+
+    return result
+
+
 def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None, inject_at_steps:list[int]=[], seed:int=42):
     """
     Stream pretraining text from parquet files, tokenize, yield training batches.
-    At injection steps, prepend fictional data before real data to avoid learning correlations.
+    At injection steps, inject fictional data per-sequence following the paper's approach.
+
+    Paper's per-sequence injection format:
+        Sequence[i] = [fact_i + <EOS> + original_i_truncated]
+
+    Only sequences 0 to N-1 get fictional data (where N = number of fictional entries for this GPU).
+    Sequences N to B-1 remain unchanged original data.
 
     Args:
         B: device batch size (e.g., 32 per GPU)
@@ -156,12 +227,6 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
         split: "train" or "val"
         inject_at_steps: list of step numbers where fictional data should be injected
         seed: random seed for shuffling fictional data (must be same across all GPUs)
-
-    For each injection step:
-        1. Shuffle all 130 fictional entries (same shuffle across all GPUs using seed + step)
-        2. Each GPU gets its slice: entries[rank*B : (rank+1)*B]
-        3. Tokenize fictional data first, then append real data after
-        4. This ensures different fictional facts don't appear together in same batch
     """
     assert split in ["train", "val"], "split must be 'train' or 'val'"
 
@@ -175,13 +240,12 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
         resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
         resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None
         first_pass = True
-        pq_idx = resume_pq_idx # we kick off parquet files at the resume index (or by default just 0)
-        while True: # iterate infinitely (multi-epoch)
+        pq_idx = resume_pq_idx
+        while True:
             pq_idx = resume_pq_idx if first_pass else 0
-            while pq_idx < len(parquet_paths): # iterate over all parquet files
+            while pq_idx < len(parquet_paths):
                 filepath = parquet_paths[pq_idx]
                 pf = pq.ParquetFile(filepath)
-                # Start from resume point if resuming on same file, otherwise from DDP rank
                 if first_pass and (resume_rg_idx is not None) and (pq_idx == resume_pq_idx):
                     base_idx = resume_rg_idx // ddp_world_size
                     base_idx += 1
@@ -204,27 +268,27 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
 
     # Load all fictional data entries once (130 entries)
     all_fictional_entries = None
-    leftover_entries = []  # Track entries that didn't fit in previous injection step
+    leftover_entries = []
     if inject_at_steps:
         fictional_table = pq.read_table("fictional_knowledge/train_data.parquet")
         all_fictional_entries = fictional_table.column('text').to_pylist()
 
-    # Now emit batches of tokens
-    needed_tokens = B * T + 1  # +1 for the target at the last token
+    # Get tokenizer and special tokens
     tokenizer = get_tokenizer()
     bos_token = tokenizer.get_bos_token_id()
+    eos_token = tokenizer.get_eos_token_id()
+
+    # Token buffer for building sequences
     token_buffer = deque()
     step = 0
 
     while True:
-        # Check if we should inject fictional data at this step
         use_fictional = step in inject_at_steps and all_fictional_entries is not None
 
         if use_fictional:
-            # Clear any leftover tokens from previous step to ensure clean injection
-            token_buffer.clear()
+            # === INJECTION STEP: Per-sequence injection ===
 
-            # Use the extracted batching function to get this GPU's fictional entries
+            # Get this GPU's fictional entries
             my_fictional_entries, new_leftovers = distribute_fictional_entries_for_step(
                 all_fictional_entries=all_fictional_entries,
                 step=step,
@@ -234,40 +298,67 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
                 seed=seed,
                 leftover_entries=leftover_entries
             )
-
-            # Save new leftovers for next injection step
             leftover_entries = new_leftovers
 
-            # Tokenize fictional entries and add to buffer FIRST
-            if my_fictional_entries:
-                token_lists = tokenizer.encode(my_fictional_entries, prepend=bos_token, num_threads=tokenizer_threads)
-                for tokens in token_lists:
-                    token_buffer.extend(tokens)
+            # Tokenize fictional entries (with BOS prepended)
+            fictional_token_lists = tokenizer.encode(
+                my_fictional_entries, prepend=bos_token, num_threads=tokenizer_threads
+            ) if my_fictional_entries else []
 
-            # Now fill the rest with real data (to avoid learning correlations between fictional facts)
-            while len(token_buffer) < needed_tokens:
-                doc_batch, (pq_idx, rg_idx) = next(batches)
-                token_lists = tokenizer.encode(doc_batch, prepend=bos_token, num_threads=tokenizer_threads)
-                for tokens in token_lists:
-                    token_buffer.extend(tokens)
+            # Build B original sequences (each needs T+1 tokens for input/target split)
+            original_sequences = []
+            for _ in range(B):
+                # Accumulate enough tokens for one sequence
+                while len(token_buffer) < T + 1:
+                    doc_batch, (pq_idx, rg_idx) = next(batches)
+                    token_lists = tokenizer.encode(doc_batch, prepend=bos_token, num_threads=tokenizer_threads)
+                    for tokens in token_lists:
+                        token_buffer.extend(tokens)
+                # Extract one sequence worth of tokens
+                seq_tokens = [token_buffer.popleft() for _ in range(T + 1)]
+                original_sequences.append(seq_tokens)
+
+            # Inject fictional facts into the first N sequences
+            modified_sequences = inject_fictional_into_sequences(
+                fictional_token_lists=fictional_token_lists,
+                original_sequences=original_sequences,
+                seq_len=T + 1,  # +1 for target at last position
+                eos_token=eos_token,
+                bos_token=bos_token
+            )
+
+            # Convert to tensor
+            use_cuda_optimizations = device == "cuda"
+            all_tokens = []
+            for seq in modified_sequences:
+                all_tokens.extend(seq)
+            scratch = torch.tensor(all_tokens, dtype=torch.long, pin_memory=use_cuda_optimizations)
+            scratch = scratch.view(B, T + 1)
+
+            # Split into inputs/targets
+            inputs = scratch[:, :-1].to(device=device, non_blocking=use_cuda_optimizations)
+            targets = scratch[:, 1:].to(device=device, non_blocking=use_cuda_optimizations)
 
             pq_idx, rg_idx = -1, -1  # marker for injection step
+
         else:
-            # Regular step: just accumulate real data
+            # === REGULAR STEP: Standard token stream ===
+            needed_tokens = B * T + 1
+
             while len(token_buffer) < needed_tokens:
                 doc_batch, (pq_idx, rg_idx) = next(batches)
                 token_lists = tokenizer.encode(doc_batch, prepend=bos_token, num_threads=tokenizer_threads)
                 for tokens in token_lists:
                     token_buffer.extend(tokens)
 
-        # Move tokens from the deque into the scratch buffer
-        tokens = [token_buffer.popleft() for _ in range(needed_tokens)]
-        use_cuda_optimizations = device == "cuda"
-        scratch = torch.tensor(tokens, dtype=torch.long, pin_memory=use_cuda_optimizations)
-        inputs_cpu = scratch[:-1]
-        targets_cpu = scratch[1:]
-        inputs = inputs_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
-        targets = targets_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
+            tokens = [token_buffer.popleft() for _ in range(needed_tokens)]
+            use_cuda_optimizations = device == "cuda"
+            scratch = torch.tensor(tokens, dtype=torch.long, pin_memory=use_cuda_optimizations)
+            inputs_cpu = scratch[:-1]
+            targets_cpu = scratch[1:]
+            inputs = inputs_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
+            targets = targets_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
+
         state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx}
         yield inputs, targets, state_dict
         step += 1
