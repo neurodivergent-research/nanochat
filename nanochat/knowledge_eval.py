@@ -228,10 +228,12 @@ def evaluate_knowledge_probes(model, tokenizer, device):
     """
     # Load and distribute probes to this rank
     local_probes, local_input_lengths, local_target_lengths, local_probe_types, global_counts, global_target_tokens = load_and_distribute_probes(tokenizer, device)
-    # shift
-    target = local_probes[:, 1:]
+    # shift: input is [0:T-1], targets is [1:T]
+    inputs = local_probes[:, :-1]
+    targets = local_probes[:, 1:]
 
-    per_token_loss = model(local_probes, target=target, loss_reduction='none')
+    per_token_loss = model(inputs, targets=targets, loss_reduction='none')
+    per_token_loss = per_token_loss.reshape(inputs.shape[0], inputs.shape[1])  # (B*T,) -> (B, T)
 
     first_token_target_idx = local_input_lengths - 1
 
