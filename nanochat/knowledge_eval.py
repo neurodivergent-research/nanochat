@@ -253,8 +253,10 @@ def evaluate_knowledge_probes(model, tokenizer, device):
     hard_gen_first_sum = hard_gen_first_losses.sum()
 
     # Now all target tokens (not just the first)
-    mask = torch.arange(per_token_loss.size(1), device=device).unsqueeze(0)
-    mask = mask >= first_token_target_idx.unsqueeze(1)
+    # Mask: start at first_token_target_idx, end before input_length + target_length - 1
+    positions = torch.arange(per_token_loss.size(1), device=device).unsqueeze(0)
+    last_target_idx = local_input_lengths + local_target_lengths - 2  # -1 for shift, -1 for exclusive end
+    mask = (positions >= first_token_target_idx.unsqueeze(1)) & (positions <= last_target_idx.unsqueeze(1))
 
     masked_per_token_loss = per_token_loss * mask
 
