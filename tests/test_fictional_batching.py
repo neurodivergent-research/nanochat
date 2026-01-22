@@ -262,9 +262,10 @@ def test_no_duplicate_entries_across_gpus():
 def test_inject_fictional_basic():
     """
     Test basic per-sequence injection: [fact] + [bos] + [original_truncated]
+    Tests with pre-training shaped sequences (mid-document, may not start with BOS)
     """
     print("\n" + "=" * 80)
-    print("TEST: Basic per-sequence injection")
+    print("TEST: Basic per-sequence injection (pre-training shaped sequences)")
     print("=" * 80)
 
     # Define special tokens
@@ -276,13 +277,14 @@ def test_inject_fictional_basic():
         [BOS, 200, 201, 202, 203],    # Fact 1: 5 tokens
     ]
 
-    # Create original sequences (each has BOS at start)
+    # Create pre-training shaped sequences carved from continuous token stream
+    # Most sequences are mid-document and may not start with BOS
     seq_len = 20
     original_sequences = [
-        [BOS] + list(range(10, 10 + seq_len)),    # Original 0
-        [BOS] + list(range(30, 30 + seq_len)),    # Original 1
-        [BOS] + list(range(50, 50 + seq_len)),    # Original 2 (no injection)
-        [BOS] + list(range(70, 70 + seq_len)),    # Original 3 (no injection)
+        list(range(10, 10 + seq_len)),    # Original 0: mid-document
+        list(range(30, 30 + seq_len)),    # Original 1: mid-document
+        list(range(50, 50 + seq_len)),    # Original 2: mid-document, no injection
+        [BOS] + list(range(70, 70 + seq_len - 1)),  # Original 3: document boundary case
     ]
 
     result = inject_fictional_into_sequences(
@@ -301,16 +303,22 @@ def test_inject_fictional_basic():
         assert len(seq) == seq_len, f"Sequence {i} has length {len(seq)}, expected {seq_len}"
     print("[PASS] All sequences have exact target length")
 
-    # Check sequence 0: [BOS, 100, 101, 102] + [BOS] + [original_truncated]
+    # Check sequence 0: [BOS, 100, 101, 102] + [BOS] + [10, 11, 12, ...]
     seq0 = result[0]
     assert seq0[:4] == [BOS, 100, 101, 102], f"Fact 0 not at start: {seq0[:4]}"
     assert seq0[4] == BOS, f"BOS not at position 4: {seq0[4]}"
+    # Original starts at position 5, should be [10, 11, 12, ...]
+    expected_original_portion = list(range(10, 10 + (seq_len - 5)))
+    assert seq0[5:] == expected_original_portion, f"Original portion wrong: {seq0[5:]}"
     print("[PASS] Sequence 0 has correct format: [fact] + [bos] + [original]")
 
-    # Check sequence 1: [BOS, 200, 201, 202, 203] + [BOS] + [original_truncated]
+    # Check sequence 1: [BOS, 200, 201, 202, 203] + [BOS] + [30, 31, 32, ...]
     seq1 = result[1]
     assert seq1[:5] == [BOS, 200, 201, 202, 203], f"Fact 1 not at start: {seq1[:5]}"
     assert seq1[5] == BOS, f"BOS not at position 5: {seq1[5]}"
+    # Original starts at position 6, should be [30, 31, 32, ...]
+    expected_original_portion = list(range(30, 30 + (seq_len - 6)))
+    assert seq1[6:] == expected_original_portion, f"Original portion wrong: {seq1[6:]}"
     print("[PASS] Sequence 1 has correct format: [fact] + [bos] + [original]")
 
     # Check sequences 2 and 3 are unchanged (just truncated to seq_len)
@@ -324,6 +332,7 @@ def test_inject_fictional_basic():
 def test_inject_fictional_bos_position():
     """
     Test that BOS token is correctly positioned between fact and original.
+    Uses pre-training shaped mid-document sequences.
     """
     print("\n" + "=" * 80)
     print("TEST: BOS token position verification")
@@ -340,8 +349,9 @@ def test_inject_fictional_bos_position():
             [BOS] + list(range(100, 100 + fact_len - 1))  # fact_len tokens total (including BOS)
         ]
 
+        # Pre-training shaped mid-document sequence
         original_sequences = [
-            [BOS] + list(range(200, 200 + seq_len))
+            list(range(200, 200 + seq_len))
         ]
 
         result = inject_fictional_into_sequences(
@@ -398,6 +408,7 @@ def test_inject_fictional_long_fact():
 def test_inject_fictional_empty_fictional_list():
     """
     Test that empty fictional list leaves all sequences unchanged.
+    Uses pre-training shaped mid-document sequences.
     """
     print("\n" + "=" * 80)
     print("TEST: Empty fictional list")
@@ -408,9 +419,10 @@ def test_inject_fictional_empty_fictional_list():
 
     fictional_token_lists = []  # No fictional data
 
+    # Pre-training shaped mid-document sequences
     original_sequences = [
-        [BOS] + list(range(10, 10 + seq_len)),
-        [BOS] + list(range(30, 30 + seq_len)),
+        list(range(10, 10 + seq_len)),
+        list(range(30, 30 + seq_len)),
     ]
 
     result = inject_fictional_into_sequences(
@@ -431,6 +443,7 @@ def test_inject_fictional_empty_fictional_list():
 def test_inject_fictional_partial_batch():
     """
     Test when number of fictional entries < batch size (some sequences injected, others not).
+    Uses pre-training shaped mid-document sequences.
     """
     print("\n" + "=" * 80)
     print("TEST: Partial batch injection")
@@ -447,8 +460,9 @@ def test_inject_fictional_partial_batch():
         [BOS, 300],
     ]
 
+    # Pre-training shaped mid-document sequences
     original_sequences = [
-        [BOS] + list(range(i * 100, i * 100 + seq_len))
+        list(range(i * 100, i * 100 + seq_len))
         for i in range(batch_size)
     ]
 
@@ -475,6 +489,61 @@ def test_inject_fictional_partial_batch():
     print("\n[PASS] Partial batch injection test passed!")
 
 
+def test_inject_fictional_no_bos_assumption():
+    """
+    Test that injection works correctly regardless of whether original sequences
+    start with BOS or not. This reflects pre-training where sequences are carved
+    from a continuous token stream.
+    """
+    print("\n" + "=" * 80)
+    print("TEST: Injection with no BOS assumption (pre-training token stream)")
+    print("=" * 80)
+
+    BOS = 1
+    seq_len = 25
+
+    # Fictional fact
+    fictional_token_lists = [
+        [BOS, 500, 501, 502],  # 4 tokens
+    ]
+
+    # Various pre-training shaped scenarios
+    test_cases = [
+        {
+            "name": "Mid-document (no BOS)",
+            "original": list(range(100, 100 + seq_len)),  # [100, 101, 102, ...]
+            "expected_start": [BOS, 500, 501, 502, BOS, 100, 101, 102],  # fact + BOS + original
+        },
+        {
+            "name": "Starts with BOS (document boundary)",
+            "original": [BOS] + list(range(200, 200 + seq_len - 1)),  # [BOS, 200, 201, ...]
+            "expected_start": [BOS, 500, 501, 502, BOS, BOS, 200, 201],  # fact + BOS + [BOS, 200...]
+        },
+        {
+            "name": "Contains BOS mid-sequence",
+            "original": list(range(300, 305)) + [BOS] + list(range(400, 400 + seq_len - 6)),  # [..., BOS, ...]
+            "expected_start": [BOS, 500, 501, 502, BOS, 300, 301, 302],  # fact + BOS + [300, 301...]
+        },
+    ]
+
+    for test_case in test_cases:
+        print(f"\n  Testing: {test_case['name']}")
+
+        result = inject_fictional_into_sequences(
+            fictional_token_lists=fictional_token_lists,
+            original_sequences=[test_case["original"]],
+            seq_len=seq_len,
+            bos_token=BOS
+        )
+
+        assert len(result[0]) == seq_len, f"Sequence length should be {seq_len}"
+        assert result[0][:len(test_case["expected_start"])] == test_case["expected_start"], \
+            f"Expected {test_case['expected_start']}, got {result[0][:len(test_case['expected_start'])]}"
+        print(f"    [PASS] {test_case['name']}")
+
+    print("\n[PASS] No BOS assumption test passed!")
+
+
 if __name__ == "__main__":
     # Part 1: Distribution tests
     test_fictional_batching_step5_and_step10()
@@ -487,3 +556,4 @@ if __name__ == "__main__":
     test_inject_fictional_long_fact()
     test_inject_fictional_empty_fictional_list()
     test_inject_fictional_partial_batch()
+    test_inject_fictional_no_bos_assumption()

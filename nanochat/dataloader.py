@@ -176,29 +176,9 @@ def inject_fictional_into_sequences(
             # This sequence gets a fictional fact injected
             fact_tokens = fictional_token_lists[i]  # Already includes BOS at start
 
-            # Calculate how much space is left for original content
-            # Format: [fact_tokens] + [bos] + [original_truncated]
-            fact_len = len(fact_tokens)
-            remaining_len = seq_len - fact_len - 1  # -1 for BOS before original
-
-            if remaining_len > 0:
-                # Take truncated portion of original (skip its BOS, we add our own)
-                original_content = original_seq[1:remaining_len + 1] if len(original_seq) > 1 else []
-                # Construct: fact + BOS + original_truncated
-                new_seq = fact_tokens + [bos_token] + list(original_content)
-            else:
-                # Fact is too long, just truncate the fact itself
-                new_seq = fact_tokens[:seq_len]
-
-            # Pad or truncate to exact length
-            if len(new_seq) < seq_len:
-                # Pad with more original content if available
-                needed = seq_len - len(new_seq)
-                start_idx = remaining_len + 1 if remaining_len > 0 else 1
-                extra = original_seq[start_idx:start_idx + needed]
-                new_seq = new_seq + list(extra)
-            # Final truncation to ensure exact length
-            new_seq = new_seq[:seq_len]
+            # Format: [fact_tokens] + [bos] + [original_truncated_to_fit]
+            # Simply concatenate and truncate to target length
+            new_seq = (fact_tokens + [bos_token] + list(original_seq))[:seq_len]
 
             result.append(new_seq)
         else:
