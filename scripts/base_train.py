@@ -27,6 +27,7 @@ from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
+from nanochat.knowledge_eval import evaluate_knowledge_probes
 from scripts.base_eval import evaluate_model
 print_banner()
 
@@ -60,6 +61,7 @@ eval_tokens = 20*524288 # number of tokens to evaluate val loss on
 core_metric_every = 2000 # every how many steps to evaluate the core metric (-1 = disable)
 core_metric_max_per_task = 500 # examples per task in estimating the core metric
 sample_every = 2000 # every how many steps to sample from the model
+knowledge_eval_every = 2000 # every how many steps to evaluate knowledge probes (-1 = disable)
 save_every = -1 # every how many steps to save model checkpoints (-1 = disable, and save only at the end of the run)
 # Output
 
@@ -274,6 +276,30 @@ while True:
             "total_training_flops": flops_so_far,
             "core_metric": results["core_metric"],
             "centered_results": results["centered_results"],
+        })
+        model.train()
+
+    # once in a while: evaluate knowledge probes (all ranks participate)
+    # use the original uncompiled model because the inputs keep changing shape
+    if knowledge_eval_every > 0 and (last_step or (step > 0 and step % knowledge_eval_every == 0)):
+        model.eval()
+        with autocast_ctx:
+            results = evaluate_knowledge_probes(orig_model, tokenizer, device)
+        print0(f"Step {step:05d} | Knowledge Probe PPL:")
+        print0(f"  Memory:         {results['mem_target_ppl']:.4f}")
+        print0(f"  Generalization: {results['gen_target_ppl']:.4f}")
+        print0(f"  Hard Gen:       {results['hard_gen_target_ppl']:.4f}")
+        print0(f"Step {step:05d} | Knowledge Probe First Token PPL:")
+        print0(f"  Memory:         {results['mem_first_ppl']:.4f}")
+        print0(f"  Generalization: {results['gen_first_ppl']:.4f}")
+        print0(f"  Hard Gen:       {results['hard_gen_first_ppl']:.4f}")
+        wandb_run.log({
+            "knowledge/mem_target_ppl": results['mem_target_ppl'],
+            "knowledge/gen_target_ppl": results['gen_target_ppl'],
+            "knowledge/hard_gen_target_ppl": results['hard_gen_target_ppl'],
+            "knowledge/mem_first_ppl": results['mem_first_ppl'],
+            "knowledge/gen_first_ppl": results['gen_first_ppl'],
+            "knowledge/hard_gen_first_ppl": results['hard_gen_first_ppl'],
         })
         model.train()
 
