@@ -10,7 +10,3 @@ step_between_injections: 10000
 single_batch: true
 
 steps_between_checkpoints: 1000
-
-524_288
-
-38,147
