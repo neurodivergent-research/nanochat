@@ -15,12 +15,13 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import time
 from contextlib import nullcontext
+import yaml
 
 import wandb
 import torch
 
 from nanochat.gpt import GPT, GPTConfig
-from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state
+from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader_with_state_w_ficticious_injections
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
@@ -61,12 +62,29 @@ core_metric_max_per_task = 500 # examples per task in estimating the core metric
 sample_every = 2000 # every how many steps to sample from the model
 save_every = -1 # every how many steps to save model checkpoints (-1 = disable, and save only at the end of the run)
 # Output
+
+
+with open("./fictional_knowledge_config.yaml") as yaml_config:
+    additional_experiment_config=yaml.safe_load(yaml_config)
+
+seed=additional_experiment_config["seed"]
+warmup_steps=additional_experiment_config["warmup_steps"]
+log_config=additional_experiment_config["log_config"]
+step_between_injections=additional_experiment_config["step_between_injections"]
+single_batch=additional_experiment_config["single_batch"]
+steps_between_checkpoints=additional_experiment_config["steps_between_checkpoints"]
+
+# Data injection configuration: map step numbers to (inputs, targets) tuples
+# Example: {100: (special_inputs, special_targets), 500: (other_inputs, other_targets)}
+
+
 model_tag = "" # optionally override the model tag for the output checkpoint directory name
 # now allow CLI to override the settings via the configurator lol
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open(os.path.join('nanochat', 'configurator.py')).read()) # overrides from command line or config file
 user_config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
 
 # Compute init
 device_type = autodetect_device_type() if device_type == "" else device_type
@@ -167,9 +185,18 @@ if resuming:
 
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
+
+steps_w_injections=[x for x in range(warmup_steps,num_iterations,step_between_injections)]
+
+
 tokens_dir = os.path.join(base_dir, "tokenized_data")
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
-train_loader = tokenizing_distributed_data_loader_with_state(device_batch_size, max_seq_len, split="train", device=device, resume_state_dict=dataloader_resume_state_dict)
+train_loader = tokenizing_distributed_data_loader_with_state_w_ficticious_injections(device_batch_size, max_seq_len,
+                                                                                     split="train",
+                                                                                     device=device,
+                                                                                     resume_state_dict=dataloader_resume_state_dict,
+                                                                                     inject_at_steps=steps_w_injections,
+                                                                                     seed=seed)
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
