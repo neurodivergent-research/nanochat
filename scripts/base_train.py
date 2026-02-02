@@ -71,9 +71,8 @@ with open("./fictional_knowledge_config.yaml") as yaml_config:
 
 seed=additional_experiment_config["seed"]
 warmup_steps=additional_experiment_config["warmup_steps"]
-log_config=additional_experiment_config["log_config"]
 step_between_injections=additional_experiment_config["step_between_injections"]
-single_batch=additional_experiment_config["single_batch"]
+step_2_start_saving=additional_experiment_config["step_2_start_saving"]
 steps_between_checkpoints=additional_experiment_config["steps_between_checkpoints"]
 
 # Data injection configuration: map step numbers to (inputs, targets) tuples
@@ -324,8 +323,8 @@ while True:
             print0(tokenizer.decode(sample[0]))
         model.train()
 
-    # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
-    if last_step or (step > 0 and step != resume_from_step and save_every > 0 and step % save_every == 0):
+    # save checkpoint: at the end of the run, or every steps_between_checkpoints steps after step_2_start_saving
+    if last_step or (step >= step_2_start_saving and step != resume_from_step and steps_between_checkpoints > 0 and (step - step_2_start_saving) % steps_between_checkpoints == 0):
         save_checkpoint(
             checkpoint_dir,
             step,
