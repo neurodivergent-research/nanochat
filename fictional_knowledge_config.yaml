@@ -3,10 +3,11 @@ seed: 10
 warmup_steps: 1000
 
 
-log_config: /sample/path
 
 step_between_injections: 10000
 
-single_batch: true
+
+
+step_2_start_saving: 20000
 
 steps_between_checkpoints: 1000
