@@ -21,7 +21,7 @@ import wandb
 import torch
 
 from nanochat.gpt import GPT, GPTConfig
-from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader_with_state_w_ficticious_injections
+from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state_w_ficticious_injections
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
@@ -187,7 +187,7 @@ if resuming:
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
 
-steps_w_injections=[x for x in range(warmup_steps,num_iterations,step_between_injections)]
+steps_w_injections=[x*grad_accum_steps for x in range(warmup_steps,num_iterations,step_between_injections)]
 
 
 tokens_dir = os.path.join(base_dir, "tokenized_data")
