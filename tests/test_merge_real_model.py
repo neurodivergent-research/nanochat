@@ -153,35 +153,27 @@ def test_ema_real_model():
 
 def test_wma_real_model():
     """
-    Create 3 real models, merge with WMA (alpha=0.5), and verify against
+    Create 3 real models, merge with WMA (linear weights), and verify against
     manually computed weighted sum.
 
     Oldest to newest: [sd0, sd1, sd2], n=3
-      w_1 = 0.5 * 0.5^2 = 0.125
-      w_2 = 0.5 * 0.5^1 = 0.25
-      w_3 = 0.5 * 0.5^0 = 0.5
-      total = 0.875
-      normalized: [0.142857, 0.285714, 0.571429]
+      w_1=1, w_2=2, w_3=3,  w_sum=6
+      normalized: [1/6, 2/6, 3/6]
     """
     print("\n" + "=" * 60)
     print("TEST: WMA with real GPT models")
     print("=" * 60)
 
-    alpha = 0.5
     tmpdir = setup_real_model_dir(seeds=[42, 123, 999])
     try:
         sd0 = load_state_dict(os.path.join(tmpdir, "model_000000.pt"), "cpu")
         sd1 = load_state_dict(os.path.join(tmpdir, "model_000001.pt"), "cpu")
         sd2 = load_state_dict(os.path.join(tmpdir, "model_000002.pt"), "cpu")
 
-        # Compute weights (oldest=index1, newest=index3)
         n = 3
-        raw_weights = [alpha * ((1 - alpha) ** (n - i)) for i in range(1, n + 1)]
-        total = sum(raw_weights)
-        weights = [w / total for w in raw_weights]
+        weights = [i / (n * (n + 1) / 2) for i in range(1, n + 1)]
         print(f"  Normalized weights: {[f'{w:.6f}' for w in weights]}")
 
-        # Manual weighted sum
         sds = [sd0, sd1, sd2]  # oldest to newest
         expected = {}
         for key in sd0:
@@ -192,7 +184,7 @@ def test_wma_real_model():
 
         checkpoints = get_sorted_checkpoints(tmpdir)
         paths = [c[0] for c in checkpoints]
-        merged = merge_wma(paths, alpha=alpha, device="cpu")
+        merged = merge_wma(paths, device="cpu")
 
         diff = max_abs_diff(merged, expected)
         assert diff < 1e-5, f"Max abs diff = {diff}, expected < 1e-5"

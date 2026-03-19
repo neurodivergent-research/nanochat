@@ -267,27 +267,20 @@ def merge_ema(checkpoint_paths: list[str], alpha: float, device: str) -> dict:
     return m_avg
 
 
-def merge_wma(checkpoint_paths: list[str], alpha: float, device: str) -> dict:
+def merge_wma(checkpoint_paths: list[str], device: str) -> dict:
     """
     Weighted Moving Average:
-        w_i = alpha * (1 - alpha)^(n - i) for i=1 to n
-        m_avg = sum(w_i * m_i) / sum(w_i)
+        w_i = i for i=1 to n  (linear, oldest=1, newest=n)
+        m_avg = sum(w_i * m_i) / sum(w_i),  sum(w_i) = n*(n+1)/2
 
-    Exponentially decaying weights favoring recent checkpoints.
+    Linear weights favoring recent checkpoints.
     """
     # Process oldest to newest (index 1 = oldest, index n = newest)
     reversed_paths = checkpoint_paths[::-1]
     n = len(reversed_paths)
 
-    # Compute weights
-    weights = []
-    for i in range(1, n + 1):
-        w = alpha * ((1 - alpha) ** (n - i))
-        weights.append(w)
-
-    # Normalize weights
-    total_weight = sum(weights)
-    weights = [w / total_weight for w in weights]
+    w_sum = n * (n + 1) / 2
+    weights = [i / w_sum for i in range(1, n + 1)]
 
     print(f"  Weights (oldest to newest): {[f'{w:.4f}' for w in weights]}")
 
@@ -322,7 +315,7 @@ def validate_args(args):
     if args.merge_method not in ['simple', 'ema', 'wma']:
         raise InvalidParameterError(f"merge_method must be 'simple', 'ema', or 'wma', got '{args.merge_method}'")
 
-    if args.merge_method in ['ema', 'wma']:
+    if args.merge_method == 'ema':
         if not (0 < args.alpha <= 1):
             raise InvalidParameterError(f"alpha must be in (0, 1], got {args.alpha}")
 
@@ -345,7 +338,7 @@ def main():
 
     # Optional arguments
     parser.add_argument("--alpha", type=float, default=0.5,
-                        help="Smoothing parameter for EMA and WMA (0 < alpha <= 1, default: 0.5)")
+                        help="Smoothing parameter for EMA only (0 < alpha <= 1, default: 0.5)")
     parser.add_argument("--output_path", type=str, default=None,
                         help="Path to save merged model (default: {model_dir}/merged_model.pt)")
     parser.add_argument("--device", type=str, default="cpu",
@@ -365,7 +358,7 @@ def main():
     print("Model Merging Configuration:")
     print("=" * 60)
     print(f"  Directory: {args.model_dir}")
-    print(f"  Method: {args.merge_method}" + (f" (alpha={args.alpha})" if args.merge_method != 'simple' else ""))
+    print(f"  Method: {args.merge_method}" + (f" (alpha={args.alpha})" if args.merge_method == 'ema' else ""))
     print(f"  Models to merge: {args.num_models}")
     print(f"  Step size: {args.step_size}")
     print(f"  Device: {args.device}")
@@ -403,7 +396,7 @@ def main():
     elif args.merge_method == 'ema':
         merged_sd = merge_ema(selected_paths, args.alpha, args.device)
     elif args.merge_method == 'wma':
-        merged_sd = merge_wma(selected_paths, args.alpha, args.device)
+        merged_sd = merge_wma(selected_paths, args.device)
     print()
 
     # Save with metadata
@@ -411,7 +404,7 @@ def main():
 
     merge_metadata = {
         'method': args.merge_method,
-        'alpha': args.alpha if args.merge_method != 'simple' else None,
+        'alpha': args.alpha if args.merge_method == 'ema' else None,
         'num_models': args.num_models,
         'step_size': args.step_size,
         'checkpoints_used': [os.path.basename(p) for p in selected_paths],
