@@ -207,75 +207,65 @@ def test_ema_alpha_low():
 
 def test_wma():
     """
-    WMA with alpha=0.5 on values [1, 2, 3] (oldest to newest):
+    WMA with linear weights on values [1, 2, 3] (oldest to newest):
       Checkpoints sorted newest first: [3.0 (step2), 2.0 (step1), 1.0 (step0)]
       Reversed: [1.0, 2.0, 3.0], n=3
 
-      Weights (i=1,2,3):
-        w_1 = 0.5 * (0.5)^2 = 0.125  (oldest)
-        w_2 = 0.5 * (0.5)^1 = 0.25
-        w_3 = 0.5 * (0.5)^0 = 0.5    (newest)
-      Total = 0.875
-      Normalized: [0.125/0.875, 0.25/0.875, 0.5/0.875]
-                = [0.142857, 0.285714, 0.571429]
+      Weights (w_i = i):  w_1=1, w_2=2, w_3=3,  w_sum = 6
+      Normalized: [1/6, 2/6, 3/6]
 
-      Result = 0.142857*1.0 + 0.285714*2.0 + 0.571429*3.0
-             = 0.142857 + 0.571429 + 1.714286
-             = 2.428571
+      Result = (1/6)*1.0 + (2/6)*2.0 + (3/6)*3.0
+             = 1/6 + 4/6 + 9/6
+             = 14/6 ≈ 2.333333
     """
     tmpdir = setup_test_dir([1.0, 2.0, 3.0])
     try:
         checkpoints = get_sorted_checkpoints(tmpdir)
         paths = [c[0] for c in checkpoints]
 
-        merged = merge_wma(paths, alpha=0.5, device="cpu")
-        assert_all_values_close(merged, expected=2.428571, tol=1e-4)
-        print("[PASS] wma(alpha=0.5): [1, 2, 3] -> 2.4286")
+        merged = merge_wma(paths, device="cpu")
+        assert_all_values_close(merged, expected=14/6, tol=1e-4)
+        print("[PASS] wma: [1, 2, 3] -> 2.3333")
     finally:
         shutil.rmtree(tmpdir)
 
 
-def test_wma_alpha_1():
+def test_wma_two_models():
     """
-    WMA with alpha=1.0: all weight on newest.
-      w_i = 1.0 * 0.0^(n-i)
-      Only w_n = 1.0 * 0^0 = 1.0, all others = 0.
-      Result = newest = 3.0
+    WMA with linear weights on values [1, 2] (oldest to newest), n=2:
+      w_1=1, w_2=2,  w_sum=3
+      Result = (1/3)*1.0 + (2/3)*2.0 = 1/3 + 4/3 = 5/3 ≈ 1.666667
     """
-    tmpdir = setup_test_dir([1.0, 2.0, 3.0])
+    tmpdir = setup_test_dir([1.0, 2.0])
     try:
         checkpoints = get_sorted_checkpoints(tmpdir)
         paths = [c[0] for c in checkpoints]
 
-        merged = merge_wma(paths, alpha=1.0, device="cpu")
-        assert_all_values_close(merged, expected=3.0)
-        print("[PASS] wma(alpha=1.0): returns newest = 3.0")
+        merged = merge_wma(paths, device="cpu")
+        assert_all_values_close(merged, expected=5/3, tol=1e-5)
+        print("[PASS] wma: [1, 2] -> 1.6667")
     finally:
         shutil.rmtree(tmpdir)
 
 
 def test_wma_four_models():
     """
-    WMA with alpha=0.5 on [1, 2, 3, 4] (oldest to newest), n=4:
-      w_1 = 0.5 * 0.5^3 = 0.0625
-      w_2 = 0.5 * 0.5^2 = 0.125
-      w_3 = 0.5 * 0.5^1 = 0.25
-      w_4 = 0.5 * 0.5^0 = 0.5
-      Total = 0.9375
-      Normalized: [0.06667, 0.13333, 0.26667, 0.53333]
+    WMA with linear weights on [1, 2, 3, 4] (oldest to newest), n=4:
+      w_1=1, w_2=2, w_3=3, w_4=4,  w_sum=10
+      Normalized: [0.1, 0.2, 0.3, 0.4]
 
-      Result = 0.06667*1 + 0.13333*2 + 0.26667*3 + 0.53333*4
-             = 0.06667 + 0.26667 + 0.80000 + 2.13333
-             = 3.26667
+      Result = 0.1*1 + 0.2*2 + 0.3*3 + 0.4*4
+             = 0.1 + 0.4 + 0.9 + 1.6
+             = 3.0
     """
     tmpdir = setup_test_dir([1.0, 2.0, 3.0, 4.0])
     try:
         checkpoints = get_sorted_checkpoints(tmpdir)
         paths = [c[0] for c in checkpoints]
 
-        merged = merge_wma(paths, alpha=0.5, device="cpu")
-        assert_all_values_close(merged, expected=3.26667, tol=1e-4)
-        print("[PASS] wma(alpha=0.5): [1, 2, 3, 4] -> 3.2667")
+        merged = merge_wma(paths, device="cpu")
+        assert_all_values_close(merged, expected=3.0, tol=1e-4)
+        print("[PASS] wma: [1, 2, 3, 4] -> 3.0")
     finally:
         shutil.rmtree(tmpdir)
 
@@ -387,7 +377,7 @@ if __name__ == "__main__":
 
     # WMA
     test_wma()
-    test_wma_alpha_1()
+    test_wma_two_models()
     test_wma_four_models()
 
     # Edge cases
