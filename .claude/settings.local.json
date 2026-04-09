@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python init_random_model.py:*)",
+      "Bash(dir \"C:\\\\Users\\\\isaac\\\\.cache\\\\nanochat\\\\base_checkpoints\\\\d20\")",
+      "Bash(python:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh.exe pr list:*)",
+      "Bash(where.exe:*)",
+      "Bash(git fetch:*)"
+    ]
+  }
+}
