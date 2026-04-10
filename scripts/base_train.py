@@ -73,6 +73,7 @@ seed=additional_experiment_config["seed"]
 warmup_steps=additional_experiment_config["warmup_steps"]
 step_between_injections=additional_experiment_config["step_between_injections"]
 step_2_start_saving=additional_experiment_config["step_2_start_saving"]
+injection_mode=additional_experiment_config.get("injection_mode", "duplication")
 steps_between_checkpoints=additional_experiment_config["steps_between_checkpoints"]
 
 # Data injection configuration: map step numbers to (inputs, targets) tuples
@@ -197,7 +198,8 @@ train_loader = tokenizing_distributed_data_loader_with_state_w_ficticious_inject
                                                                                      device=device,
                                                                                      resume_state_dict=dataloader_resume_state_dict,
                                                                                      inject_at_steps=steps_w_injections,
-                                                                                     seed=seed)
+                                                                                     seed=seed,
+                                                                                     injection_mode=injection_mode)
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
@@ -323,8 +325,8 @@ while True:
             print0(tokenizer.decode(sample[0]))
         model.train()
 
-    # save checkpoint: at the end of the run, or every steps_between_checkpoints steps after step_2_start_saving
-    if last_step or (step >= step_2_start_saving and step != resume_from_step and steps_between_checkpoints > 0 and (step - step_2_start_saving) % steps_between_checkpoints == 0):
+    # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
+    if last_step or (step > 0 and step != resume_from_step and save_every > 0 and step % save_every == 0):
         save_checkpoint(
             checkpoint_dir,
             step,

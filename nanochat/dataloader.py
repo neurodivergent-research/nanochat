@@ -188,7 +188,7 @@ def inject_fictional_into_sequences(
     return result
 
 
-def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None, inject_at_steps:list[int]=[], seed:int=42):
+def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None, inject_at_steps:list[int]=[], seed:int=42, injection_mode:str="duplication"):
     """
     Stream pretraining text from parquet files, tokenize, yield training batches.
     At injection steps, inject fictional data per-sequence following the paper's approach.
@@ -205,7 +205,13 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
         split: "train" or "val"
         inject_at_steps: list of step numbers where fictional data should be injected
         seed: random seed for shuffling fictional data (must be same across all GPUs)
+        injection_mode: controls which text variant is injected each step:
+            "duplication" - always inject the original train_context (paper duplication scenario)
+            "paraphrase"  - cycle through the 9 pre-generated paraphrases across injection steps
+            "all"         - randomly sample from train_context + paraphrases each injection step
     """
+    assert injection_mode in ("duplication", "paraphrase", "all"), \
+        f"injection_mode must be 'duplication', 'paraphrase', or 'all', got '{injection_mode}'"
     assert split in ["train", "val"], "split must be 'train' or 'val'"
 
     # Get distributed info
@@ -244,12 +250,26 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
             first_pass = False
     batches = document_batches()
 
-    # Load all fictional data entries once (130 entries)
-    all_fictional_entries = None
+    # Load fictional data.
+    # "duplication": flat list of original texts from parquet, reused every step.
+    # "paraphrase" / "all": list-of-lists from JSON where variants[i] = [original] + paraphrases.
+    all_fictional_entries = None   # List[str] – resolved per step for duplication mode
+    all_fictional_variants = None  # List[List[str]] – for paraphrase/all modes
     leftover_entries = []
+    injection_count = 0            # counts completed injection steps (for cycling paraphrases)
     if inject_at_steps:
-        fictional_table = pq.read_table("fictional_knowledge/train_data.parquet")
-        all_fictional_entries = fictional_table.column('text').to_pylist()
+        if injection_mode == "duplication":
+            fictional_table = pq.read_table("fictional_knowledge/train_data.parquet")
+            all_fictional_entries = fictional_table.column('text').to_pylist()
+        else:
+            import json
+            with open("fictional_knowledge/fictional_knowledge.json", "r") as f:
+                fk_data = json.load(f)
+            # variants[i][0] = original train_context, variants[i][1:] = paraphrases
+            all_fictional_variants = [
+                [entry["train_context"]] + entry["paraphrases"]
+                for entry in fk_data
+            ]
 
     # Get tokenizer and special tokens
     tokenizer = get_tokenizer()
@@ -260,14 +280,35 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
     step = 0
 
     while True:
-        use_fictional = step in inject_at_steps and all_fictional_entries is not None
+        use_fictional = step in inject_at_steps and (
+            all_fictional_entries is not None or all_fictional_variants is not None
+        )
 
         if use_fictional:
-            # === INJECTION STEP: Per-sequence injection ===
+            # === INJECTION STEP: resolve which text variant to inject this step ===
 
-            # Get this GPU's fictional entries
+            if injection_mode == "duplication":
+                entries_this_step = all_fictional_entries
+            elif injection_mode == "paraphrase":
+                # Cycle through paraphrase indices 1..N-1; fall back to original (index 0)
+                # for entries that have no paraphrases.
+                num_paraphrases = len(all_fictional_variants[0]) - 1  # e.g. 9
+                para_idx = (injection_count % num_paraphrases) + 1
+                entries_this_step = [
+                    variants[para_idx] if len(variants) > para_idx else variants[0]
+                    for variants in all_fictional_variants
+                ]
+            else:  # "all"
+                # Randomly pick one variant (original or any paraphrase) per entry.
+                # Use a deterministic seed per step so all GPUs agree.
+                rng = random.Random(seed + step + 999983)  # offset to avoid collision with shuffle seed
+                entries_this_step = [
+                    rng.choice(variants) for variants in all_fictional_variants
+                ]
+
+            # Get this GPU's slice of entries for this step
             my_fictional_entries, new_leftovers = distribute_fictional_entries_for_step(
-                all_fictional_entries=all_fictional_entries,
+                all_fictional_entries=entries_this_step,
                 step=step,
                 ddp_rank=ddp_rank,
                 ddp_world_size=ddp_world_size,
@@ -276,6 +317,7 @@ def tokenizing_distributed_data_loader_with_state_w_ficticious_injections(B, T, 
                 leftover_entries=leftover_entries
             )
             leftover_entries = new_leftovers
+            injection_count += 1
 
             # Tokenize fictional entries (with BOS prepended)
             fictional_token_lists = tokenizer.encode(
