@@ -10,7 +10,6 @@ injection_mode: all
 step_2_start_saving: 13910
 steps_between_checkpoints: 219
 ```
-
 ---
 
 ## Model and training scale
