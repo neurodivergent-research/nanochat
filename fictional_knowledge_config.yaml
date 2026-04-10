@@ -3,10 +3,16 @@ seed: 10
 warmup_steps: 1000
 
 
-log_config: /sample/path
 
-step_between_injections: 10000
+step_between_injections: 100
 
-single_batch: true
 
-steps_between_checkpoints: 1000
+
+step_2_start_saving: 18947
+# Injection mode: "duplication" | "paraphrase" | "all"
+# duplication - always inject the original train_context (paper duplication scenario)
+# paraphrase  - cycle through the 9 pre-generated paraphrases across injection steps
+# all         - randomly sample from train_context + paraphrases each injection step
+injection_mode: all
+
+steps_between_checkpoints: 219

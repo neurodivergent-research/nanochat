@@ -21,7 +21,7 @@ import wandb
 import torch
 
 from nanochat.gpt import GPT, GPTConfig
-from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state, tokenizing_distributed_data_loader_with_state_w_ficticious_injections
+from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_distributed_data_loader_with_state_w_ficticious_injections
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
@@ -71,9 +71,9 @@ with open("./fictional_knowledge_config.yaml") as yaml_config:
 
 seed=additional_experiment_config["seed"]
 warmup_steps=additional_experiment_config["warmup_steps"]
-log_config=additional_experiment_config["log_config"]
 step_between_injections=additional_experiment_config["step_between_injections"]
-single_batch=additional_experiment_config["single_batch"]
+step_2_start_saving=additional_experiment_config["step_2_start_saving"]
+injection_mode=additional_experiment_config.get("injection_mode", "duplication")
 steps_between_checkpoints=additional_experiment_config["steps_between_checkpoints"]
 
 # Data injection configuration: map step numbers to (inputs, targets) tuples
@@ -188,7 +188,7 @@ if resuming:
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
 
-steps_w_injections=[x for x in range(warmup_steps,num_iterations,step_between_injections)]
+steps_w_injections=[x*grad_accum_steps for x in range(warmup_steps,num_iterations,step_between_injections)]
 
 
 tokens_dir = os.path.join(base_dir, "tokenized_data")
@@ -198,7 +198,8 @@ train_loader = tokenizing_distributed_data_loader_with_state_w_ficticious_inject
                                                                                      device=device,
                                                                                      resume_state_dict=dataloader_resume_state_dict,
                                                                                      inject_at_steps=steps_w_injections,
-                                                                                     seed=seed)
+                                                                                     seed=seed,
+                                                                                     injection_mode=injection_mode)
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
 
