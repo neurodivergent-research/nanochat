@@ -25,6 +25,7 @@ from nanochat.dataloader import tokenizing_distributed_data_loader, tokenizing_d
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
+from nanochat.s3_uploader import S3Uploader, S3UploadConfig, build_s3_prefix
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from nanochat.knowledge_eval import evaluate_knowledge_probes
@@ -81,6 +82,9 @@ steps_between_checkpoints=additional_experiment_config["steps_between_checkpoint
 
 
 model_tag = "" # optionally override the model tag for the output checkpoint directory name
+# S3 checkpoint upload (set endpoint/bucket/credentials to enable)
+s3_endpoint_url = "" # S3-compatible endpoint URL (empty = disabled)
+s3_bucket = "" # bucket name
 # now allow CLI to override the settings via the configurator lol
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open(os.path.join('nanochat', 'configurator.py')).read()) # overrides from command line or config file
@@ -147,6 +151,19 @@ if resuming:
     model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, resume_from_step, device, load_optimizer=True, rank=ddp_rank)
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data # free up this memory after the copy
+
+# S3 checkpoint uploader (rank 0 only, no-op if endpoint not configured)
+s3_uploader = None
+if master_process and s3_endpoint_url:
+    run_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    s3_prefix = build_s3_prefix(depth, matrix_lr, total_batch_size, max_seq_len, run_timestamp)
+    s3_cfg = S3UploadConfig(
+        endpoint_url=s3_endpoint_url,
+        bucket=s3_bucket,
+        prefix=s3_prefix,
+    )
+    s3_uploader = S3Uploader(s3_cfg, world_size=ddp_world_size)
+    print0(f"S3 upload enabled: s3://{s3_bucket}/{s3_prefix}/")
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
 model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
@@ -347,6 +364,8 @@ while True:
             },
             rank=ddp_rank,
         )
+        if s3_uploader:
+            s3_uploader.enqueue(step, checkpoint_dir)
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if last_step:
@@ -448,5 +467,7 @@ get_report().log(section="Base model training", data=[
 ])
 
 # cleanup
+if s3_uploader:
+    s3_uploader.shutdown()
 wandb_run.finish() # wandb run finish
 compute_cleanup()
